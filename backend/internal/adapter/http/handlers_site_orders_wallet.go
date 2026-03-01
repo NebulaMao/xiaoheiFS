@@ -255,8 +255,12 @@ func (h *Handler) WalletOrderPay(c *gin.Context) {
 	if strings.TrimSpace(payload.Extra["client_ip"]) == "" {
 		payload.Extra["client_ip"] = strings.TrimSpace(c.ClientIP())
 	}
+	walletOrderNo := strings.TrimSpace(fmt.Sprint(meta["payment_order_no"]))
+	if walletOrderNo == "" {
+		// Retry flow fallback: deterministic order no derived from wallet order id.
+		walletOrderNo = walletPaymentOrderNo(order.ID)
+	}
 	returnURL, notifyURL := h.defaultWalletPaymentCallbackURLs(c, method)
-	walletOrderNo := fmt.Sprintf("WALLET-%d-%d", getUserID(c), time.Now().UnixNano())
 	payRes, err := h.paymentSvc.CreateProviderPaymentByScene(c, "wallet", method, appshared.PaymentCreateRequest{
 		OrderNo:   walletOrderNo,
 		UserID:    getUserID(c),
@@ -336,24 +340,7 @@ func (h *Handler) defaultPaymentCallbackBaseURL(c *gin.Context) string {
 	if v := buildCallbackBaseURL(strings.TrimSpace(h.getSettingValueByKey(c, "site_url"))); v != "" {
 		return v
 	}
-	if c == nil || c.Request == nil {
-		return ""
-	}
-	scheme := "http"
-	if c.Request.TLS != nil {
-		scheme = "https"
-	}
-	if proto := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")); proto != "" {
-		scheme = strings.TrimSpace(strings.Split(proto, ",")[0])
-	}
-	host := strings.TrimSpace(c.GetHeader("X-Forwarded-Host"))
-	if host == "" {
-		host = strings.TrimSpace(c.Request.Host)
-	}
-	if host == "" {
-		return ""
-	}
-	return buildCallbackBaseURL(scheme + "://" + host)
+	return ""
 }
 
 func buildCallbackBaseURL(raw string) string {
@@ -371,6 +358,27 @@ func buildCallbackBaseURL(raw string) string {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return strings.TrimRight(u.String(), "/")
+}
+
+func walletPaymentOrderNo(orderID int64) string {
+	return fmt.Sprintf("WALLET-ORDER-%d", orderID)
+}
+
+func walletPaymentMatched(item domain.WalletOrder, provider, orderNo, tradeNo string) bool {
+	meta := parseMapJSON(item.MetaJSON)
+	metaMethod := strings.TrimSpace(fmt.Sprint(meta["payment_method"]))
+	if metaMethod != provider {
+		return false
+	}
+	metaOrderNo := strings.TrimSpace(fmt.Sprint(meta["payment_order_no"]))
+	metaTradeNo := strings.TrimSpace(fmt.Sprint(meta["payment_trade_no"]))
+	if orderNo != "" && (metaOrderNo == orderNo || walletPaymentOrderNo(item.ID) == orderNo) {
+		return true
+	}
+	if tradeNo != "" && metaTradeNo == tradeNo {
+		return true
+	}
+	return false
 }
 
 func (h *Handler) WalletPaymentNotify(c *gin.Context) {
@@ -408,43 +416,45 @@ func (h *Handler) WalletPaymentNotify(c *gin.Context) {
 		return
 	}
 	limit := 200
-	offset := 0
-	for i := 0; i < 20; i++ {
-		items, total, listErr := h.walletOrder.ListAllOrders(c, string(domain.WalletOrderPendingReview), limit, offset)
-		if listErr != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": listErr.Error()})
-			return
-		}
-		for _, item := range items {
-			if item.Type != domain.WalletOrderRecharge || item.Status != domain.WalletOrderPendingReview {
-				continue
+	for _, statusFilter := range []string{
+		string(domain.WalletOrderPendingReview),
+		string(domain.WalletOrderApproved),
+	} {
+		offset := 0
+		for i := 0; i < 20; i++ {
+			items, total, listErr := h.walletOrder.ListAllOrders(c, statusFilter, limit, offset)
+			if listErr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": listErr.Error()})
+				return
 			}
-			meta := parseMapJSON(item.MetaJSON)
-			metaMethod := strings.TrimSpace(fmt.Sprint(meta["payment_method"]))
-			if metaMethod != provider {
-				continue
-			}
-			metaOrderNo := strings.TrimSpace(fmt.Sprint(meta["payment_order_no"]))
-			metaTradeNo := strings.TrimSpace(fmt.Sprint(meta["payment_trade_no"]))
-			matched := (orderNo != "" && metaOrderNo == orderNo) || (tradeNo != "" && metaTradeNo == tradeNo)
-			if !matched {
-				continue
-			}
-			_, _, approveErr := h.walletOrder.Approve(c, 0, item.ID)
-			if approveErr != nil {
-				if approveErr == appshared.ErrConflict {
+			for _, item := range items {
+				if item.Type != domain.WalletOrderRecharge {
+					continue
+				}
+				if !walletPaymentMatched(item, provider, orderNo, tradeNo) {
+					continue
+				}
+				// Idempotent ack: already approved recharge should always return success.
+				if item.Status == domain.WalletOrderApproved {
 					c.JSON(http.StatusOK, gin.H{"ok": true, "trade_no": result.TradeNo})
 					return
 				}
-				c.JSON(http.StatusBadRequest, gin.H{"error": approveErr.Error()})
+				_, _, approveErr := h.walletOrder.Approve(c, 0, item.ID)
+				if approveErr != nil {
+					if approveErr == appshared.ErrConflict {
+						c.JSON(http.StatusOK, gin.H{"ok": true, "trade_no": result.TradeNo})
+						return
+					}
+					c.JSON(http.StatusBadRequest, gin.H{"error": approveErr.Error()})
+					return
+				}
+				c.JSON(http.StatusOK, gin.H{"ok": true, "trade_no": result.TradeNo})
 				return
 			}
-			c.JSON(http.StatusOK, gin.H{"ok": true, "trade_no": result.TradeNo})
-			return
-		}
-		offset += len(items)
-		if offset >= total || len(items) == 0 {
-			break
+			offset += len(items)
+			if offset >= total || len(items) == 0 {
+				break
+			}
 		}
 	}
 	c.JSON(http.StatusBadRequest, gin.H{"error": appshared.ErrInvalidInput.Error()})
