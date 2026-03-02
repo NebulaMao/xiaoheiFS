@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	appcatalog "xiaoheiplay/internal/app/catalog"
@@ -559,29 +560,33 @@ func paging(c *gin.Context) (int, int) {
 	limit := 20
 	offset := 0
 	page := 0
-	var query struct {
-		Limit    *int `form:"limit" binding:"omitempty,gte=1,lte=500"`
-		Offset   *int `form:"offset" binding:"omitempty,gte=0"`
-		Page     *int `form:"page" binding:"omitempty,gte=1"`
-		Pages    *int `form:"pages" binding:"omitempty,gte=1,lte=500"`
-		PageSize *int `form:"page_size" binding:"omitempty,gte=1,lte=500"`
+
+	parseInt := func(key string) (int, bool) {
+		raw, ok := c.GetQuery(key)
+		if !ok {
+			return 0, false
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil {
+			return 0, false
+		}
+		return n, true
 	}
-	if err := c.ShouldBindQuery(&query); err == nil {
-		if query.Limit != nil {
-			limit = *query.Limit
-		}
-		if query.Offset != nil {
-			offset = *query.Offset
-		}
-		if query.Page != nil {
-			page = *query.Page
-		}
-		if query.Pages != nil {
-			limit = *query.Pages
-		}
-		if query.PageSize != nil {
-			limit = *query.PageSize
-		}
+
+	if v, ok := parseInt("limit"); ok {
+		limit = v
+	}
+	if v, ok := parseInt("offset"); ok {
+		offset = v
+	}
+	if v, ok := parseInt("page"); ok {
+		page = v
+	}
+	if v, ok := parseInt("pages"); ok {
+		limit = v
+	}
+	if v, ok := parseInt("page_size"); ok {
+		limit = v
 	}
 	if limit <= 0 {
 		limit = 20

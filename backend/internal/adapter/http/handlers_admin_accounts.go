@@ -19,7 +19,7 @@ type permissionGroupIDURI struct {
 func (h *Handler) AdminAdmins(c *gin.Context) {
 	limit, offset := paging(c)
 	var query struct {
-		Status string `form:"status" binding:"omitempty,oneof=active disabled"`
+		Status string `form:"status" binding:"omitempty,oneof=active disabled all"`
 	}
 	if err := c.ShouldBindQuery(&query); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidInput.Error()})

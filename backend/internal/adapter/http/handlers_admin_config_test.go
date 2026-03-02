@@ -98,6 +98,10 @@ func TestHandlers_AdminConfigEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("admin list: %d", rec.Code)
 	}
+	rec = testutil.DoJSON(t, env.Router, http.MethodGet, "/admin/api/v1/admins?status=all", nil, token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin list status all: %d", rec.Code)
+	}
 	rec = testutil.DoJSON(t, env.Router, http.MethodPatch, "/admin/api/v1/admins/"+testutil.Itoa(adminResp.ID), map[string]any{
 		"username":            "opsadmin2",
 		"email":               "opsadmin2@example.com",
