@@ -87,7 +87,7 @@ var (
 func ValidateAdminPath(path string) error {
 	path = strings.TrimSpace(path)
 	
-	// 允许为空（使用默认路径 /admin）
+	// Empty value is invalid.
 	if path == "" {
 		return domain.ErrAdminPathInvalid
 	}
